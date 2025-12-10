@@ -204,8 +204,8 @@ def connect_window(window_name: str) -> Optional[str]:
     window_controller = Win32Controller(
         window.hwnd,
         screencap_method=MaaWin32ScreencapMethodEnum.PrintWindow,
-        mouse_method=MaaWin32InputMethodEnum.PostMessageWithCursorPos,
-        keyboard_method=MaaWin32InputMethodEnum.PostMessageWithCursorPos,
+        mouse_method=MaaWin32InputMethodEnum.PostMessage,
+        keyboard_method=MaaWin32InputMethodEnum.PostMessage,
     )
     if not window_controller.post_connection().wait().succeeded:
         return None
@@ -434,6 +434,29 @@ def click_key(controller_id: str, key: int) -> bool:
     if not controller:
         return False
     return controller.post_click_key(key).wait().succeeded
+
+@mcp.tool(
+    name="scroll",
+    description="""
+    在设备屏幕上执行鼠标滚轮操作。
+
+    参数：
+    - controller_id: 控制器 ID，由 connect_adb_device() 返回
+    - x: 滚动的 X 坐标（像素，整数）
+    - y: 滚动的 Y 坐标（像素，整数）
+
+    返回值：
+    - 成功：返回 True
+    - 失败：返回 False
+
+    注意：该方法仅对 Windows 窗口控制有效，无法作用于 ADB。
+    """,
+)
+def scroll(controller_id: str, x: int, y: int) -> bool:
+    controller = object_registry.get(controller_id)
+    if not controller:
+        return False
+    return controller.post_scroll(x, y).wait().succeeded
 
 
 def cleanup_screenshots():
