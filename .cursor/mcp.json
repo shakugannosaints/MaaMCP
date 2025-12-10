@@ -2,7 +2,7 @@
     "mcpServers": {
       "MAA MCP": {
         "command": "python",
-        "args": ["mcp/main.py"]
+        "args": ["${workspaceFolder}/mcp/main.py"]
       }
     }
   }

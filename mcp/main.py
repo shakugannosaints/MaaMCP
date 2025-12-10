@@ -1,59 +1,78 @@
-import sys
-import importlib.util
+import uuid
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional, Any
 
-# 先导入 FastMCP，避免与项目中的 mcp 目录产生命名冲突
 from fastmcp import FastMCP
 
-# 处理直接运行时的路径问题
-project_root = Path(__file__).parent.parent
-if str(project_root) not in sys.path:
-    sys.path.append(str(project_root))
-
-from maa.toolkit import Toolkit
-from maa.controller import AdbController
+from maa.define import (
+    MaaWin32InputMethodEnum,
+    MaaWin32ScreencapMethodEnum,
+)
+from maa.toolkit import DesktopWindow, Toolkit
+from maa.controller import AdbController, Win32Controller
 from maa.resource import Resource
 from maa.tasker import Tasker, TaskDetail
 from maa.pipeline import JRecognitionType, JOCR
 
-# 动态导入 registry 模块，避免命名冲突
-if __name__ == "__main__":
-    # 直接运行时，使用 importlib 动态加载
-    registry_path = Path(__file__).parent / "registry.py"
-    spec = importlib.util.spec_from_file_location("mcp.registry", registry_path)
-    registry_module = importlib.util.module_from_spec(spec)
-    sys.modules["mcp.registry"] = registry_module
-    spec.loader.exec_module(registry_module)
-    object_registry = registry_module.object_registry
-else:
-    # 作为模块导入时，使用相对导入
-    from .registry import object_registry
+
+class ObjectRegistry:
+    def __init__(self):
+        self._objects: dict[str, Any] = {}
+
+    def register(self, object: Any) -> str:
+        id = str(uuid.uuid4())
+        self._objects[id] = object
+        return id
+
+    def register_by_name(self, name: str, object: Any) -> str:
+        self._objects[name] = object
+        return name
+
+    def unregister(self, id: str):
+        del self._objects[id]
+
+    def get(self, id: str) -> Any | None:
+        return self._objects.get(id)
+
+    def list(self) -> list[str]:
+        return list(self._objects.keys())
+
+    def clear(self):
+        self._objects.clear()
+
+
+object_registry = ObjectRegistry()
+
 
 mcp = FastMCP(
     "MAA MCP",
     version="1.0.0",
     instructions="""
     MAA MCP 是一个基于 MaaFramewok 框架的 Model Context Protocol 服务，
-    提供 Android 设备自动化控制能力，支持通过 ADB 连接模拟器或真机，实现屏幕截图、
-    光学字符识别（OCR）、坐标点击、手势滑动等自动化操作。
+    提供 Android 设备、Windows 桌面自动化控制能力，支持通过 ADB 连接模拟器或真机，通过窗口句柄连接Windows桌面
+    实现屏幕截图、光学字符识别（OCR）、坐标点击、手势滑动、按键点击、输入文本等自动化操作。
 
     标准工作流程：
-    1. 设备发现与连接
+    1. ADB 设备列表发现与连接
        - 调用 find_adb_device_list() 扫描可用的 ADB 设备
        - 若发现多个设备，必须暂停执行并询问用户选择目标设备（禁止自动选择）
        - 使用 connect_adb_device(device_name) 建立设备连接，获取控制器 ID
 
-    2. 资源初始化
+    2. Windows 桌面列表发现与连接
+       - 调用 find_window_list() 扫描可用的 Windows 桌面
+       - 若发现多个桌面，必须暂停执行并询问用户选择目标桌面（禁止自动选择）
+       - 使用 connect_window(window_name) 建立桌面连接，获取控制器 ID
+
+    3. 资源初始化
        - 调用 load_resource(resource_path) 加载资源包
        - 资源路径应指向包含 resource/model/*.onnx 的目录（通常为项目 assets/resource 目录）
        - 加载前需验证路径存在性，缺失时提示用户配置资源文件
 
-    3. 任务管理器创建
+    4. 任务管理器创建
        - 调用 create_tasker(controller_id, resource_id) 创建任务管理器实例
        - 将控制器与资源绑定，获取任务管理器 ID
 
-    4. 自动化执行循环
+    5. 自动化执行循环
        - 调用 ocr(tasker_id) 进行屏幕截图并执行 OCR 识别
        - 根据识别结果调用 click() 或 swipe() 执行相应操作
        - 重复执行步骤 4，直至任务完成
@@ -64,9 +83,10 @@ mcp = FastMCP(
     - 多设备场景下必须等待用户明确选择，不得自动决策
 
     安全约束（重要）：
-    - 所有 ADB 相关操作必须且仅能通过本 MCP 提供的工具函数执行
+    - 所有 ADB、窗口句柄 相关操作必须且仅能通过本 MCP 提供的工具函数执行
     - 严禁在终端中直接执行 adb 命令（如 adb devices、adb shell 等）
-    - 严禁使用其他第三方库或方法与 ADB 设备交互
+    - 严禁在终端中直接执行窗口句柄相关命令（如 GetWindowText、GetWindowTextLength 等）
+    - 严禁使用其他第三方库或方法与 ADB 设备或窗口句柄交互
     - 严禁绕过本 MCP 工具自行实现设备控制逻辑
     """,
 )
@@ -80,31 +100,39 @@ Toolkit.init_option(Path(__file__).parent)
     扫描并枚举当前系统中所有可用的 ADB 设备。
 
     返回值类型：
-    - 无设备：返回空列表 []
-    - 单个设备：返回设备名称字符串，可直接用于连接
-    - 多个设备：返回字典格式 {"devices": [设备名称列表], "message": "找到多个设备，请询问用户选择哪个设备"}
+    - 设备名称列表
 
     重要约束：
-    当返回值为字典类型时，必须立即暂停执行流程，向用户展示设备列表并等待用户明确选择。
+    当返回多个设备时，必须立即暂停执行流程，向用户展示设备列表并等待用户明确选择。
     严禁在未获得用户确认的情况下自动选择设备。
 """,
 )
-def find_adb_device_list() -> Union[list[str], str, dict]:
+def find_adb_device_list() -> list[str]:
     device_list = Toolkit.find_adb_devices()
     for device in device_list:
         object_registry.register_by_name(device.name, device)
-    
-    device_names = [device.name for device in device_list]
-    
-    if len(device_names) == 0:
-        return []
-    elif len(device_names) == 1:
-        return device_names[0]
-    else:
-        return {
-            "devices": device_names,
-            "message": "找到多个设备，请询问用户选择哪个设备，不能自动选择。"
-        }
+
+    return [device.name for device in device_list]
+
+
+@mcp.tool(
+    name="find_window_list",
+    description="""
+    扫描并枚举当前系统中所有可用的窗口。
+
+    返回值类型：
+    - 窗口名称列表
+
+    重要约束：
+    当返回多个窗口时，必须立即暂停执行流程，向用户展示窗口列表并等待用户明确选择。
+    严禁在未获得用户确认的情况下自动选择窗口。
+    """,
+)
+def find_window_list() -> list[str]:
+    window_list = Toolkit.find_desktop_windows()
+    for window in window_list:
+        object_registry.register_by_name(window.window_name, window)
+    return [window.window_name for window in window_list if window.window_name]
 
 
 @mcp.tool(
@@ -138,6 +166,38 @@ def connect_adb_device(device_name: str) -> Optional[str]:
     if not adb_controller.post_connection().wait().succeeded:
         return None
     return object_registry.register(adb_controller)
+
+
+@mcp.tool(
+    name="connect_window",
+    description="""
+    建立与指定窗口的连接，获取窗口控制器实例。
+
+    参数：
+    - window_name: 窗口名称，需通过 find_window_list() 获取
+
+    返回值：
+    - 成功：返回窗口控制器 ID（字符串），用于后续所有窗口操作
+    - 失败：返回 None
+    
+    说明：
+    窗口控制器 ID 将用于后续的点击、滑动、截图等操作，请妥善保存。
+    """,
+)
+def connect_window(window_name: str) -> Optional[str]:
+    window: DesktopWindow | None = object_registry.get(window_name)
+    if not window:
+        return None
+
+    window_controller = Win32Controller(
+        window.hwnd,
+        screencap_method=MaaWin32ScreencapMethodEnum.PrintWindow,
+        mouse_method=MaaWin32InputMethodEnum.PostMessageWithCursorPos,
+        keyboard_method=MaaWin32InputMethodEnum.PostMessageWithCursorPos,
+    )
+    if not window_controller.post_connection().wait().succeeded:
+        return None
+    return object_registry.register(window_controller)
 
 
 @mcp.tool(
@@ -214,7 +274,7 @@ def create_tasker(controller_id: str, resource_id: str) -> Optional[str]:
     识别结果可用于后续的坐标定位和自动化决策，通常包含文本内容、边界框坐标、置信度评分等信息。
 """,
 )
-def ocr(tasker_id: str) -> Optional[str]:
+def ocr(tasker_id: str) -> Optional[list]:
     tasker: Tasker | None = object_registry.get(tasker_id)
     if not tasker:
         return None
@@ -288,6 +348,51 @@ def swipe(
     return (
         controller.post_swipe(start_x, start_y, end_x, end_y, duration).wait().succeeded
     )
+
+
+@mcp.tool(
+    name="input_text",
+    description="""
+    在设备屏幕上执行输入文本操作。
+
+    参数：
+    - controller_id: 控制器 ID，由 connect_adb_device() 返回
+    - text: 要输入的文本（字符串）
+
+    返回值：
+    - 成功：返回 True
+    - 失败：返回 False
+
+    说明：
+    输入文本操作将模拟用户在设备屏幕上输入文本，支持中文、英文等常见字符。
+    """,
+)
+def input_text(controller_id: str, text: str) -> bool:
+    controller = object_registry.get(controller_id)
+    if not controller:
+        return False
+    return controller.post_input_text(text).wait().succeeded
+
+
+@mcp.tool(
+    name="click_key",
+    description="""
+    在设备屏幕上执行按键点击操作。
+
+    参数：
+    - controller_id: 控制器 ID，由 connect_adb_device() 返回
+    - key: 要点击的按键（虚拟按键码）
+
+    返回值：
+    - 成功：返回 True
+    - 失败：返回 False
+    """,
+)
+def click_key(controller_id: str, key: int) -> bool:
+    controller = object_registry.get(controller_id)
+    if not controller:
+        return False
+    return controller.post_click_key(key).wait().succeeded
 
 
 if __name__ == "__main__":
