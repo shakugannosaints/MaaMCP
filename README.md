@@ -40,6 +40,8 @@ MaaMCP 是一个 Model Context Protocol 服务器，将 MaaFramework 的强大�
 - `connect_adb_device` - 连接到 Android 设备
 - `connect_window` - 连接到 Windows 窗口
 
+注意: `connect_window` 默认使用 `PostMessage` 鼠标/键盘模拟方式，这对后台运行时不抢占用户鼠标的场景更友好。若发现 click 无效或目标应用忽略此类消息，会自动再尝试使用 `Seize` 作为回退。若需要针对特殊场景，请通过 `mouse_method` / `keyboard_method` 参数进行覆盖。
+
 #### 📦 资源管理
 - `load_resource` - 加载 OCR 模型和图像资源
 - `create_tasker` - 创建自动化任务管理器
@@ -621,6 +623,8 @@ graph LR
 
 1. **Scan** - Use `find_adb_device_list` or `find_window_list`
 2. **Connect** - Use `connect_adb_device` or `connect_window`
+
+Note: `connect_window` uses `PostMessage` as the default mouse/keyboard input method. This is background-friendly and does not steal the user's cursor. If a click is ignored for the target app, the server will attempt to fallback to `Seize` automatically. You can override the input method using the optional `mouse_method` and `keyboard_method` parameters when calling `connect_window`.
 3. **Load** - Use `load_resource` to load OCR models
 4. **Create** - Use `create_tasker` to create task manager
 5. **Operate** - Use OCR, click, swipe, etc. for automation

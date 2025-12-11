@@ -32,8 +32,8 @@
             // 截图及控制方式，请根据项目实际情况修改
             // 文档: https://github.com/MaaXYZ/MaaFramework/blob/main/docs/zh_cn/2.4-%E6%8E%A7%E5%88%B6%E6%96%B9%E5%BC%8F%E8%AF%B4%E6%98%8E.md
             "screencap": "PrintWindow", // 截图方式
-            "mouse": "PostMessageWithCursorPos", // 鼠标控制方式
-            "keyboard": "PostMessageWithCursorPos" // 键盘控制方式
+            "mouse": "PostMessage", // 鼠标控制方式，默认使用后台友好的 PostMessage
+            "keyboard": "PostMessage" // 键盘控制方式
         }
     ],
     "resource": [

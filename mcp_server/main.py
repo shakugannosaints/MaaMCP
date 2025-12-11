@@ -20,6 +20,7 @@ from maa.pipeline import JRecognitionType, JOCR
 from mcp_server.registry import ObjectRegistry
 
 object_registry = ObjectRegistry()
+controller_meta: dict[str, dict] = {}
 # 记录当前会话保存的截图文件路径，用于退出时清理
 _saved_screenshots: list[Path] = []
 
@@ -173,7 +174,9 @@ def connect_adb_device(device_name: str) -> Optional[str]:
 
     if not adb_controller.post_connection().wait().succeeded:
         return None
-    return object_registry.register(adb_controller)
+    ctrl_id = object_registry.register(adb_controller)
+    controller_meta[ctrl_id] = {"type": "adb"}
+    return ctrl_id
 
 
 @mcp.tool(
@@ -183,6 +186,8 @@ def connect_adb_device(device_name: str) -> Optional[str]:
 
     参数：
     - window_name: 窗口名称，需通过 find_window_list() 获取
+    - mouse_method: 可选的鼠标输入方式（MaaWin32InputMethodEnum），默认为 PostMessage
+    - keyboard_method: 可选的键盘输入方式（MaaWin32InputMethodEnum），默认为 PostMessage
 
     返回值：
     - 成功：返回窗口控制器 ID（字符串），用于后续所有窗口操作
@@ -190,18 +195,29 @@ def connect_adb_device(device_name: str) -> Optional[str]:
     
     说明：
     窗口控制器 ID 将用于后续的点击、滑动、截图等操作，请妥善保存。
+    说明：
+    默认情况下：
+    - 鼠标/键盘输入方式默认使用 PostMessage（后台友好，不抢占用户光标）。
+    - 如果 click 无效或被目标程序忽略，会自动尝试使用 Seize 作为回退方式。
+    - 若需要强制使用某种方式，可通过 `mouse_method`/`keyboard_method` 参数传入对应的 `MaaWin32InputMethodEnum` 值。
     """,
 )
-def connect_window(window_name: str) -> Optional[str]:
+def connect_window(
+    window_name: str,
+    mouse_method: Optional[int] = None,
+    keyboard_method: Optional[int] = None,
+) -> Optional[str]:
     window: DesktopWindow | None = object_registry.get(window_name)
     if not window:
         return None
 
+    # 默认使用PostMessage以实现对后台友好的行为（不会捕获光标）。
+    # 如果点击失败（窗口未接受操作），将在`click`工具中按需尝试降级至Seize模式。
     window_controller = Win32Controller(
         window.hwnd,
         screencap_method=MaaWin32ScreencapMethodEnum.FramePool,
-        mouse_method=MaaWin32InputMethodEnum.PostMessage,
-        keyboard_method=MaaWin32InputMethodEnum.PostMessage,
+            mouse_method=(mouse_method if mouse_method is not None else MaaWin32InputMethodEnum.PostMessage),
+            keyboard_method=(keyboard_method if keyboard_method is not None else MaaWin32InputMethodEnum.PostMessage),
     )
     # 设置默认截图短边为 1080p
     # 电脑屏幕通常较大，使用更高清的截图
@@ -212,7 +228,20 @@ def connect_window(window_name: str) -> Optional[str]:
 
     if not window_controller.post_connection().wait().succeeded:
         return None
-    return object_registry.register(window_controller)
+    ctrl_id = object_registry.register(window_controller)
+    # 记录meta info以备降级使用
+    controller_meta[ctrl_id] = {
+        "type": "win32",
+        "hwnd": window.hwnd,
+        "mouse_method": mouse_method
+        if mouse_method is not None
+        else MaaWin32InputMethodEnum.PostMessage,
+        "keyboard_method": keyboard_method
+        if keyboard_method is not None
+        else MaaWin32InputMethodEnum.PostMessage,
+    }
+    controller_meta[ctrl_id]["screencap_method"] = MaaWin32ScreencapMethodEnum.FramePool
+    return ctrl_id
 
 
 @mcp.tool(
@@ -355,7 +384,46 @@ def click(controller_id: str, x: int, y: int) -> bool:
     controller = object_registry.get(controller_id)
     if not controller:
         return False
-    return controller.post_click(x, y).wait().succeeded
+    # First attempt with configured method
+    ok = controller.post_click(x, y).wait().succeeded
+    if ok:
+        return True
+
+    # If failed and we can fallback, try with Seize for Win32 controllers
+    meta = controller_meta.get(controller_id)
+    if meta and meta.get("type") == "win32":
+        hwnd = meta.get("hwnd")
+        try:
+            print(f"click(): initial click failed for controller {controller_id}; trying Seize fallback...")
+            fallback = Win32Controller(
+                hwnd,
+                screencap_method=meta.get("screencap_method", MaaWin32ScreencapMethodEnum.FramePool),
+                mouse_method=MaaWin32InputMethodEnum.Seize,
+                keyboard_method=meta.get("keyboard_method", MaaWin32InputMethodEnum.PostMessage),
+            )
+            if fallback.post_connection().wait().succeeded:
+                ok2 = fallback.post_click(x, y).wait().succeeded
+                # cleanup
+                try:
+                    # If fallback click succeeded, update the registered controller
+                    # to use Seize going forward so future clicks don't require
+                    # recreating a fallback controller.
+                    if ok2:
+                        try:
+                            object_registry._objects[controller_id] = fallback
+                            controller_meta[controller_id]["mouse_method"] = MaaWin32InputMethodEnum.Seize
+                        except Exception:
+                            pass
+                    else:
+                        del fallback
+                except Exception:
+                    pass
+                return bool(ok2)
+        except Exception:
+            # ignore any error and return False
+            pass
+
+    return False
 
 
 @mcp.tool(
